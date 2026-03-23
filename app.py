@@ -8,6 +8,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from recommender import load_data, build_item_similarity_matrix, get_recommendations
+from nn_recommender import train_autoencoder, get_nn_recommendations
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -316,10 +317,18 @@ st.markdown("""
 def init_data():
     anime_df, ratings_df = load_data()
     sim_df = build_item_similarity_matrix(ratings_df)
-    return anime_df, sim_df
+    return anime_df, ratings_df, sim_df
 
 
-anime_df, similarity_df = init_data()
+@st.cache_resource
+def init_nn_model(_ratings_df):
+    """Train Autoencoder (cached so it only trains once)."""
+    model, user_item, loss_history, anime_ids = train_autoencoder(_ratings_df, epochs=50)
+    return model, user_item, loss_history, anime_ids
+
+
+anime_df, ratings_df, similarity_df = init_data()
+nn_model, nn_user_item, nn_loss_history, nn_anime_ids = init_nn_model(ratings_df)
 titles = sorted(anime_df["title"].tolist())
 
 # ── Search & Select ──────────────────────────────────────────────────────────
@@ -370,13 +379,22 @@ with col_info:
 st.markdown('<hr class="glass-divider">', unsafe_allow_html=True)
 
 # ── Recommendations ──────────────────────────────────────────────────────────
-recommendations = get_recommendations(selected, anime_df, similarity_df)
+cosine_recs = get_recommendations(selected, anime_df, similarity_df)
+nn_recs = get_nn_recommendations(selected, anime_df, nn_model, nn_user_item)
 
-if recommendations:
-    st.markdown('<div class="section-title"><span class="dot"></span> Top 5 แนะนำสำหรับคุณ</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title"><span class="dot"></span> Top 5 แนะนำสำหรับคุณ</div>', unsafe_allow_html=True)
+
+tab_cosine, tab_nn = st.tabs(["🔢 Cosine Similarity", "🧠 Neural Network (Autoencoder)"])
+
+
+def render_rec_cards(recs: list[dict]):
+    """Helper to render recommendation cards in 5 columns."""
+    if not recs:
+        st.info("ไม่พบคำแนะนำสำหรับเรื่องนี้ ลองเลือกอนิเมะเรื่องอื่น!")
+        return
+
     cols = st.columns(5, gap="medium")
-
-    for i, rec in enumerate(recommendations):
+    for i, rec in enumerate(recs):
         rec_info = anime_df[anime_df["title"] == rec["title"]]
         rec_genres = ""
         rec_score = 0
@@ -402,29 +420,77 @@ if recommendations:
             </div>
             """, unsafe_allow_html=True)
 
-    # ── Similarity Chart ─────────────────────────────────────────────────
+
+# ── Tab 1: Cosine Similarity ─────────────────────────────────────────────
+with tab_cosine:
+    st.markdown(f"""
+    <div style="background:{T['glass']}; border:1px solid {T['glass_border']}; border-radius:12px;
+                padding:12px 18px; margin-bottom:16px; font-size:0.82rem; color:{T['text2']};">
+        💡 <b>Cosine Similarity</b> — คำนวณ "มุม" ระหว่าง Vector คะแนนของอนิเมะแต่ละคู่
+        จาก User-Item Matrix เพื่อหาเรื่องที่คนกลุ่มเดียวกันให้คะแนนคล้ายกัน
+    </div>
+    """, unsafe_allow_html=True)
+    render_rec_cards(cosine_recs)
+
+    if cosine_recs:
+        st.markdown('<hr class="glass-divider">', unsafe_allow_html=True)
+        st.markdown('<div class="section-title"><span class="dot"></span> Similarity Visualization</div>', unsafe_allow_html=True)
+        chart_data = pd.DataFrame({
+            "อนิเมะ": [r["title"][:35] + ("..." if len(r["title"]) > 35 else "") for r in cosine_recs],
+            "Similarity (%)": [r["match_percentage"] for r in cosine_recs],
+        })
+        st.bar_chart(chart_data.set_index("อนิเมะ"), horizontal=True, color=T["chart_color"])
+
+
+# ── Tab 2: Neural Network ────────────────────────────────────────────────
+with tab_nn:
+    st.markdown(f"""
+    <div style="background:{T['glass']}; border:1px solid {T['glass_border']}; border-radius:12px;
+                padding:12px 18px; margin-bottom:16px; font-size:0.82rem; color:{T['text2']};">
+        🧠 <b>Neural Network (Autoencoder)</b> — ฝึก AI ให้เรียนรู้ Pattern ของ User จาก Rating Data
+        แล้วทำนายว่า User น่าจะให้คะแนนอนิเมะเรื่องไหนสูง<br>
+        Architecture: <code>Input({len(nn_anime_ids)}) → 128 → 32 (Latent) → 128 → Output({len(nn_anime_ids)})</code>
+    </div>
+    """, unsafe_allow_html=True)
+    render_rec_cards(nn_recs)
+
+    if nn_recs:
+        st.markdown('<hr class="glass-divider">', unsafe_allow_html=True)
+        st.markdown('<div class="section-title"><span class="dot"></span> Similarity Visualization</div>', unsafe_allow_html=True)
+        nn_chart = pd.DataFrame({
+            "อนิเมะ": [r["title"][:35] + ("..." if len(r["title"]) > 35 else "") for r in nn_recs],
+            "Match (%)": [r["match_percentage"] for r in nn_recs],
+        })
+        st.bar_chart(nn_chart.set_index("อนิเมะ"), horizontal=True, color="#e94590")
+
+    # ── Training Loss Chart ──────────────────────────────────────────
     st.markdown('<hr class="glass-divider">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title"><span class="dot"></span> Similarity Visualization</div>', unsafe_allow_html=True)
-
-    chart_data = pd.DataFrame({
-        "อนิเมะ": [r["title"][:35] + ("..." if len(r["title"]) > 35 else "") for r in recommendations],
-        "Similarity (%)": [r["match_percentage"] for r in recommendations],
+    st.markdown('<div class="section-title"><span class="dot"></span> Training Loss (Autoencoder)</div>', unsafe_allow_html=True)
+    loss_chart = pd.DataFrame({
+        "Epoch": list(range(1, len(nn_loss_history) + 1)),
+        "Loss (MSE)": nn_loss_history,
     })
-    st.bar_chart(
-        chart_data.set_index("อนิเมะ"),
-        horizontal=True,
-        color=T["chart_color"],
-    )
-
-else:
-    st.info("ไม่พบคำแนะนำสำหรับเรื่องนี้ ลองเลือกอนิเมะเรื่องอื่น!")
+    st.line_chart(loss_chart.set_index("Epoch"), color="#e94590")
 
 # ── Sidebar stats ────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("---")
     st.markdown("### 📈 สถิติ")
     st.metric("จำนวนอนิเมะ", f"{len(anime_df)} เรื่อง")
-    st.metric("ผู้ใช้จำลอง", "300 คน")
+    st.metric("ผู้ใช้จำลอง", "500 คน")
+
+    st.markdown("### 🧠 Neural Network")
+    st.markdown(f"""
+    <div style="background:{T['glass']}; border:1px solid {T['glass_border']}; border-radius:10px;
+                padding:10px 14px; font-size:0.78rem; color:{T['text2']};">
+        <b style="color:{T['text']};">Architecture</b><br>
+        Input({len(nn_anime_ids)}) → 128 → 32 → 128 → Output({len(nn_anime_ids)})<br><br>
+        <b style="color:{T['text']};">Final Loss (MSE)</b><br>
+        {nn_loss_history[-1]:.6f}<br><br>
+        <b style="color:{T['text']};">Epochs</b>: 50 &nbsp;|&nbsp;
+        <b style="color:{T['text']};">Optimizer</b>: Adam
+    </div>
+    """, unsafe_allow_html=True)
 
     st.markdown("### 🏷️ แนวยอดนิยม")
     all_genres = []
@@ -438,8 +504,9 @@ with st.sidebar:
 st.markdown(f"""
 <hr class="glass-divider">
 <div class="footer">
-    สร้างด้วย ❤️ โดยใช้ <a href="https://streamlit.io">Streamlit</a> &
-    <a href="https://scikit-learn.org">scikit-learn</a> ·
-    Item-based Collaborative Filtering with Cosine Similarity
+    สร้างด้วย ❤️ โดยใช้ <a href="https://streamlit.io">Streamlit</a>,
+    <a href="https://scikit-learn.org">scikit-learn</a> &
+    <a href="https://pytorch.org">PyTorch</a> ·
+    Item-based Collaborative Filtering + Neural Network Autoencoder
 </div>
 """, unsafe_allow_html=True)
