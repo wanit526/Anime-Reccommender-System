@@ -306,7 +306,6 @@ st.markdown("""
 <div class="hero">
     <span class="hero-emoji">🎌</span>
     <h1>Anime Recommender</h1>
-    <p class="subtitle">ค้นหาอนิเมะเรื่องถัดไปของคุณ — ขับเคลื่อนด้วย AI Collaborative Filtering</p>
 </div>
 <hr class="glass-divider">
 """, unsafe_allow_html=True)
