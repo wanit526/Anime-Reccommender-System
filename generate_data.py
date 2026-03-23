@@ -66,7 +66,7 @@ def fetch_top_anime() -> list[dict]:
             })
 
         count = len(data.get("data", []))
-        print(f"→ {count} anime (total: {len(all_anime)})")
+        print(f"-> {count} anime (total: {len(all_anime)})")
 
         # Save progress every 50 pages
         if page % 50 == 0:
@@ -92,22 +92,69 @@ def _save_anime(anime_list):
     return df
 
 
-def generate_synthetic_ratings(anime_ids: list[int],
+def generate_synthetic_ratings(anime_df: pd.DataFrame,
                                 num_users: int = NUM_USERS) -> list[dict]:
-    """Generate realistic synthetic user ratings. Scales with anime count."""
+    """
+    Generate genre-aware synthetic user ratings.
+    Each user has 2-4 favorite genres and rates anime accordingly:
+      - Matching genres: higher scores (mean=8)
+      - Non-matching genres: lower scores (mean=5)
+    This creates realistic rating patterns so Cosine Similarity
+    can find meaningful relationships between anime.
+    """
+    # Build genre lookup: anime_id -> set of genres
+    genre_map = {}
+    all_genres = set()
+    for _, row in anime_df.iterrows():
+        genres = set()
+        raw = str(row.get("genres", ""))
+        if raw and raw not in ("N/A", "nan"):
+            genres = {g.strip() for g in raw.split(",") if g.strip()}
+        genre_map[row["anime_id"]] = genres
+        all_genres.update(genres)
+
+    all_genres = list(all_genres) if all_genres else ["General"]
+    anime_ids = anime_df["anime_id"].tolist()
     total = len(anime_ids)
+
     # Each user rates 5-15% of all anime (min 10, max total)
     min_r = max(10, int(total * 0.05))
     max_r = min(total, max(min_r, int(total * 0.15)))
-    print(f"  Generating ratings: {num_users} users × {min_r}-{max_r} ratings each...")
+    print(f"  Generating genre-aware ratings: {num_users} users × {min_r}-{max_r} ratings each...")
+    print(f"  Found {len(all_genres)} unique genres")
 
     ratings = []
     for user_id in range(1, num_users + 1):
+        # Each user has 2-4 favorite genres
+        num_fav = random.randint(2, min(4, len(all_genres)))
+        fav_genres = set(random.sample(all_genres, num_fav))
+
         num_ratings = random.randint(min_r, max_r)
-        rated_anime = random.sample(anime_ids, num_ratings)
-        for aid in rated_anime:
-            rating = min(10, max(1, int(np.random.normal(loc=7, scale=2))))
+
+        # Bias selection: 70% from favorite genres, 30% random
+        fav_anime = [aid for aid in anime_ids if genre_map.get(aid, set()) & fav_genres]
+        other_anime = [aid for aid in anime_ids if aid not in fav_anime]
+
+        num_fav_picks = min(int(num_ratings * 0.7), len(fav_anime))
+        num_other_picks = min(num_ratings - num_fav_picks, len(other_anime))
+
+        picked = set()
+        if fav_anime and num_fav_picks > 0:
+            picked.update(random.sample(fav_anime, num_fav_picks))
+        if other_anime and num_other_picks > 0:
+            picked.update(random.sample(other_anime, num_other_picks))
+
+        for aid in picked:
+            anime_genres = genre_map.get(aid, set())
+            if anime_genres & fav_genres:
+                # Anime matches user's favorite genres → high score
+                rating = int(np.random.normal(loc=8, scale=1.2))
+            else:
+                # Anime doesn't match → lower score
+                rating = int(np.random.normal(loc=5, scale=1.5))
+            rating = min(10, max(1, rating))
             ratings.append({"user_id": user_id, "anime_id": aid, "rating": rating})
+
     return ratings
 
 
@@ -124,8 +171,7 @@ def main():
     anime_df = _save_anime(anime_list)
     print(f"\n✓ Saved {len(anime_df)} anime to anime_info.csv")
 
-    anime_ids = anime_df["anime_id"].tolist()
-    ratings = generate_synthetic_ratings(anime_ids)
+    ratings = generate_synthetic_ratings(anime_df)
     ratings_df = pd.DataFrame(ratings)
     ratings_df.to_csv("user_ratings.csv", index=False)
     print(f"✓ Saved {len(ratings_df)} ratings from {NUM_USERS} users to user_ratings.csv")
