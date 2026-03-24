@@ -323,12 +323,14 @@ def init_data():
 @st.cache_resource
 def init_nn_model(_ratings_df):
     """Train Autoencoder (cached so it only trains once)."""
-    model, user_item, loss_history, anime_ids = train_autoencoder(_ratings_df, epochs=50)
-    return model, user_item, loss_history, anime_ids
+    model, user_item, train_losses, test_losses, eval_metrics, anime_ids = train_autoencoder(
+        _ratings_df, epochs=50
+    )
+    return model, user_item, train_losses, test_losses, eval_metrics, anime_ids
 
 
 anime_df, ratings_df, similarity_df = init_data()
-nn_model, nn_user_item, nn_loss_history, nn_anime_ids = init_nn_model(ratings_df)
+nn_model, nn_user_item, nn_train_losses, nn_test_losses, nn_metrics, nn_anime_ids = init_nn_model(ratings_df)
 titles = sorted(anime_df["title"].tolist())
 
 # ── Search & Select ──────────────────────────────────────────────────────────
@@ -449,9 +451,17 @@ with tab_nn:
                 padding:12px 18px; margin-bottom:16px; font-size:0.82rem; color:{T['text2']};">
         🧠 <b>Neural Network (Autoencoder)</b> — ฝึก AI ให้เรียนรู้ Pattern ของ User จาก Rating Data
         แล้วทำนายว่า User น่าจะให้คะแนนอนิเมะเรื่องไหนสูง<br>
-        Architecture: <code>Input({len(nn_anime_ids)}) → 128 → 32 (Latent) → 128 → Output({len(nn_anime_ids)})</code>
+        Architecture: <code>Input({len(nn_anime_ids)}) → 128 → 32 (Latent) → 128 → Output({len(nn_anime_ids)})</code><br>
+        Train/Test Split: <code>{nn_metrics['train_size']} train / {nn_metrics['test_size']} test ({int(nn_metrics['test_ratio']*100)}%)</code>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── Evaluation Metrics ────────────────────────────────────────────
+    m1, m2, m3 = st.columns(3)
+    m1.metric("📉 RMSE", f"{nn_metrics['rmse']:.4f}", help="Root Mean Squared Error — ยิ่งต่ำยิ่งดี")
+    m2.metric("🎯 Precision@5", f"{nn_metrics['precision_at_5']*100:.1f}%", help="ใน 5 เรื่องที่แนะนำ กี่เรื่องที่ User ชอบจริง")
+    m3.metric("📊 Test Ratio", f"{int(nn_metrics['test_ratio']*100)}%", help="สัดส่วนข้อมูล Test")
+
     render_rec_cards(nn_recs)
 
     if nn_recs:
@@ -463,14 +473,15 @@ with tab_nn:
         })
         st.bar_chart(nn_chart.set_index("อนิเมะ"), horizontal=True, color="#e94590")
 
-    # ── Training Loss Chart ──────────────────────────────────────────
+    # ── Training Loss Chart (Train vs Test) ──────────────────────────
     st.markdown('<hr class="glass-divider">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title"><span class="dot"></span> Training Loss (Autoencoder)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title"><span class="dot"></span> Training Loss — Train vs Test</div>', unsafe_allow_html=True)
     loss_chart = pd.DataFrame({
-        "Epoch": list(range(1, len(nn_loss_history) + 1)),
-        "Loss (MSE)": nn_loss_history,
+        "Epoch": list(range(1, len(nn_train_losses) + 1)),
+        "Train Loss": nn_train_losses,
+        "Test Loss": nn_test_losses,
     })
-    st.line_chart(loss_chart.set_index("Epoch"), color="#e94590")
+    st.line_chart(loss_chart.set_index("Epoch"), color=["#6c63ff", "#e94590"])
 
 # ── Sidebar stats ────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -485,8 +496,10 @@ with st.sidebar:
                 padding:10px 14px; font-size:0.78rem; color:{T['text2']};">
         <b style="color:{T['text']};">Architecture</b><br>
         Input({len(nn_anime_ids)}) → 128 → 32 → 128 → Output({len(nn_anime_ids)})<br><br>
-        <b style="color:{T['text']};">Final Loss (MSE)</b><br>
-        {nn_loss_history[-1]:.6f}<br><br>
+        <b style="color:{T['text']};">Train/Test Split</b><br>
+        {nn_metrics['train_size']} train / {nn_metrics['test_size']} test ({int(nn_metrics['test_ratio']*100)}%)<br><br>
+        <b style="color:{T['text']};">RMSE</b>: {nn_metrics['rmse']:.4f} &nbsp;|&nbsp;
+        <b style="color:{T['text']};">Precision@5</b>: {nn_metrics['precision_at_5']*100:.1f}%<br><br>
         <b style="color:{T['text']};">Epochs</b>: 50 &nbsp;|&nbsp;
         <b style="color:{T['text']};">Optimizer</b>: Adam
     </div>
